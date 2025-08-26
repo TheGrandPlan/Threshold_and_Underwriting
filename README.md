@@ -28,6 +28,24 @@ Production deployment copies live in `apps-script/production/` and are the ONLY 
 - `GeoCodeAllPendingAddresses.gs` - Resumable batch geocoder.
 - `AutoSorter.gs` - Multi-column sort (AB asc, X desc, R desc).
 - `DeleteDuplicates.gs` - De-duplicate by address.
+ - (Template Sheet) `geoComp.ts` (kept outside production folder currently) - Local per-deal analysis engine (filters, comps import, map, chart sizing, preliminary push, investor split optimization, slide generator, break-even menu hooks). A trimmed deployable version can be produced later if desired.
+ - `BreakEvenAnalysis.ts` - Break-even solver (integrated via menu in geoComp). If you prefer, you can merge this file into geoComp or copy only the portions you use.
+
+### Script Property Keys Expected by geoComp / Break-Even
+Set these in the bound project BEFORE running the initial setup:
+ - PRELIMINARY_SHEET_ID (ID of master preliminary sheet receiving summary metrics)
+ - DATA_SPREADSHEET_ID (ID of shared comps data sheet; provides Current Comps data)
+ - SLIDES_TEMPLATE_ID (Google Slides template for presentation generation)
+ - DEBUG_LOG = true (optional, enables extra debugLog output)
+ - apiKey (geocoding)
+ - staticMapsApiKey (static map image generation)
+ - (After initial setup) userEmail, serviceAccountEmail, gcpProjectId, privateKey (fetched from centralized service)
+
+### Concurrency Protection
+Critical functions (`main`, `refilterAndAnalyze`, `runInvestorSplitOptimization`) now run inside a script lock helper to avoid overlapping trigger executions. If a lock cannot be obtained within 5s the invocation is skipped (logged with `[LOCK]`).
+
+### Centralized Metric Cell Map
+Metric output cell references (address, net profit, ROI, margin, error feedback) are centralized in `METRIC_CELLS` for easier future maintenance.
 
 ## Version Control Guidance
 - Edit logic in root working copies (or future `/src`) if you re-expand; regenerate/refresh production files after changes.
@@ -44,4 +62,4 @@ Production deployment copies live in `apps-script/production/` and are the ONLY 
 - Review log output for any ERROR: markers after first run.
 
 ---
-Last updated: INITIAL.
+Last updated: Added geoComp locking, metric constants, break-even integration docs (Aug 2025).

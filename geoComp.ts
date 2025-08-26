@@ -23,6 +23,22 @@ const INVESTOR_SPLIT_CELL = 'B145'; // Cell to CHANGE
 const INVESTOR_IRR_CELL = 'B153';   // Cell to READ 
 const PROJECT_NET_PROFIT_CELL = 'B137'; // Cell containing overall project net profit
 
+// === Extracted metric cell references used in updatePreliminarySheet & slide gen (centralized for maintainability) ===
+const METRIC_CELLS = Object.freeze({
+    SIMPLE_ADDRESS: 'B6',
+    NET_PROFIT: 'K109',
+    ROI: 'K111',
+    MARGIN: 'K110',
+    ERROR_FEEDBACK: 'A150'
+});
+
+// === Global execution lock helper to prevent overlapping trigger executions ===
+function withGlobalLock(key, fn){
+    const lock = LockService.getScriptLock();
+    if(!lock.tryLock(5000)){ Logger.log('[LOCK] Busy, skipping: '+ key); return; }
+    try { return fn(); } finally { lock.releaseLock(); }
+}
+
 const context = {
     spreadsheet: null,
     sheet: null,
@@ -148,6 +164,7 @@ function setupAlreadyDone() {
  * goal seek calculation function. Triggered by menu item.
  */
 function runInvestorSplitOptimization() {
+    return withGlobalLock('investorSplitOpt', function(){
     const functionName = "runInvestorSplitOptimization";
     const ui = SpreadsheetApp.getUi();
     Logger.log(`[${functionName}] Manual trigger: Running Investor Split Optimization...`);
@@ -206,6 +223,7 @@ function runInvestorSplitOptimization() {
          ui.alert(`Error during optimization: ${error.message}`);
     }
     Logger.log(`[${functionName}] Manual trigger: Investor Split Optimization finished.`);
+    });
 }
 /**
  * Function triggered MANUALLY the first time via the '⚙️ Setup' menu,
@@ -691,7 +709,7 @@ function updatePreliminarySheet() {
     }
 
     // 1. Read the Simple Address stored locally
-    const simpleAddress = detailedAnalysisSheet.getRange('B6').getValue();
+    const simpleAddress = detailedAnalysisSheet.getRange(METRIC_CELLS.SIMPLE_ADDRESS).getValue();
     if (!simpleAddress) {
       throw new Error("Simple address not found in 'Detailed Analysis'!B6.");
     }
@@ -699,9 +717,9 @@ function updatePreliminarySheet() {
 
     // 2. Read the calculated metrics from the cells
     // Add error checking/default values if cells might be blank or contain errors
-    const netProfit = executiveSummarySheet.getRange('K109').getValue();         
-    const simpleROI = executiveSummarySheet.getRange('K111').getValue();         
-    const netProfitMargin = executiveSummarySheet.getRange('K110').getValue(); 
+    const netProfit = executiveSummarySheet.getRange(METRIC_CELLS.NET_PROFIT).getValue();         
+    const simpleROI = executiveSummarySheet.getRange(METRIC_CELLS.ROI).getValue();         
+    const netProfitMargin = executiveSummarySheet.getRange(METRIC_CELLS.MARGIN).getValue(); 
     Logger.log(`[${functionName}] Retrieved Metrics from K109, K111, K110 - Net Profit: ${netProfit}, ROI: ${simpleROI}, Margin: ${netProfitMargin}`);
 
     // Basic validation - ensure we have something to write
@@ -743,8 +761,8 @@ function updatePreliminarySheet() {
     Logger.log(`[${functionName}] ❌ FATAL ERROR during update: ${error.message} - Stack: ${error.stack || 'N/A'}`);
     // Attempt to log error back to the local sheet if possible
     try {
-      if (ss) {
-        ss.getSheetByName('Executive Summary').getRange('A150').setValue(`Error updating Preliminary: ${error.message}`); // Example error cell
+            if (ss) {
+                ss.getSheetByName('Executive Summary').getRange(METRIC_CELLS.ERROR_FEEDBACK).setValue(`Error updating Preliminary: ${error.message}`); // Example error cell
       }
     } catch (logErr) {
       Logger.log(`[${functionName}] Also failed to write error to local sheet: ${logErr.message}`);
@@ -844,6 +862,7 @@ function handleSheetEdit(e) {
  * @param {object} context - The global context object.
  */
 function main(context) {
+    return withGlobalLock('main', function(){
   const functionName = "main";
   Logger.log(`[${functionName}] Starting Main function execution...`);
 
@@ -924,7 +943,8 @@ function main(context) {
     }
   }
 
-  Logger.log(`[${functionName}] Main function execution complete.`);
+    Logger.log(`[${functionName}] Main function execution complete.`);
+    });
 }
 
 /**
@@ -2070,6 +2090,7 @@ function updateAnalysisOutputs(context) {
  * @param {object} context - The global context object, assumed to be valid and initialized.
  */
 function refilterAndAnalyze(context) {
+    return withGlobalLock('refilter', function(){
     const functionName = "refilterAndAnalyze";
     Logger.log(`[${functionName}] Starting re-filter and analysis based on existing data...`);
 
@@ -2118,6 +2139,7 @@ function refilterAndAnalyze(context) {
     }
 
     Logger.log(`[${functionName}] Re-filter and analysis complete.`);
+    });
 }
 
 /**
