@@ -10,12 +10,17 @@ var PARENT_FOLDER_ID = getProp_('PARENT_FOLDER_ID','MISSING_PARENT_FOLDER_ID');
 var TEMPLATE_FILE_ID = getProp_('TEMPLATE_FILE_ID','MISSING_TEMPLATE_FILE_ID');
 var N8N_WEBHOOK_URL = getProp_('N8N_WEBHOOK_URL','');
 var CENTRAL_URL = getProp_('CENTRAL_URL','');
+// Simple lock helper to avoid concurrent overlapping executions that could create duplicate folders/files.
+function withTacsLock_(fn){ var lock=LockService.getScriptLock(); if(!lock.tryLock(5000)){ Logger.log('[TACS] Another run in progress; skipping.'); return; } try{ return fn(); } finally{ lock.releaseLock(); } }
 function checkThresholdAndProcess(){
-	var ss=SpreadsheetApp.getActiveSpreadsheet();
-	var sheet=ss.getSheetByName(THRESHOLD_SHEET_NAME); if(!sheet){ Logger.log('Sheet missing'); return; }
-	var data=sheet.getDataRange().getValues(); if(data.length<=HEADER_ROWS){ Logger.log('No rows'); return; }
-	var processed=0; for(var i=HEADER_ROWS;i<data.length;i++){ try{ var row=data[i]; var metric=parseMetric_(row[COL.metric]); if(metric==null||!(metric>0.40)) continue; var status=String(row[COL.status]||'').trim().toUpperCase(); if(status!=='ACTIVE') continue; if(isChecked_(row[COL.processedCheck])) continue; var address=row[COL.address]; if(!address){ continue; } createFolderCopyAndCallCentralized(address,row[COL.zip],i,row[COL.lotSize],row[COL.askingPrice]); processed++; }catch(err){ Logger.log('Err row '+(i+1)+': '+err.message); }}
-	Logger.log('Processed '+processed+' row(s).');
+	return withTacsLock_(function(){
+		if(PARENT_FOLDER_ID.indexOf('MISSING_')===0||TEMPLATE_FILE_ID.indexOf('MISSING_')===0){ Logger.log('[TACS] Missing PARENT_FOLDER_ID or TEMPLATE_FILE_ID property; aborting.'); return; }
+		var ss=SpreadsheetApp.getActiveSpreadsheet();
+		var sheet=ss.getSheetByName(THRESHOLD_SHEET_NAME); if(!sheet){ Logger.log('Sheet missing'); return; }
+		var data=sheet.getDataRange().getValues(); if(data.length<=HEADER_ROWS){ Logger.log('No rows'); return; }
+		var processed=0; for(var i=HEADER_ROWS;i<data.length;i++){ try{ var row=data[i]; var metric=parseMetric_(row[COL.metric]); if(metric==null||!(metric>0.40)) continue; var status=String(row[COL.status]||'').trim().toUpperCase(); if(status!=='ACTIVE') continue; if(isChecked_(row[COL.processedCheck])) continue; var address=row[COL.address]; if(!address){ continue; } createFolderCopyAndCallCentralized(address,row[COL.zip],i,row[COL.lotSize],row[COL.askingPrice]); processed++; }catch(err){ Logger.log('Err row '+(i+1)+': '+err.message); }}
+		Logger.log('Processed '+processed+' row(s).');
+	});
 }
 function createFolderCopyAndCallCentralized(propertyAddress,zipCode,rowIndex,lotSize,askingPrice){ var sheet=SpreadsheetApp.getActiveSpreadsheet().getSheetByName(THRESHOLD_SHEET_NAME); var sheetRow=rowIndex+1; var runId=Utilities.getUuid().slice(0,8); try{ var parent=DriveApp.getFolderById(PARENT_FOLDER_ID); var safeName=sanitizeName_(propertyAddress); var folder=parent.createFolder(safeName); var tmpl=DriveApp.getFileById(TEMPLATE_FILE_ID); var newName=safeName+' - Analysis'; var file=tmpl.makeCopy(newName,folder); var url=file.getUrl(); sheet.getRange(sheetRow,COL.processedCheck+1).setValue(true); sheet.getRange(sheetRow,COL.link+1).setValue(url); populateNewSpreadsheet_(file.getId(),propertyAddress,zipCode,lotSize,askingPrice); if(N8N_WEBHOOK_URL){ postJsonSafe_(N8N_WEBHOOK_URL,{fileName:newName,fileUrl:url},'n8n',runId);} if(CENTRAL_URL){ var secret=Utilities.getUuid(); postJsonSafe_(CENTRAL_URL,{action:'initialize',spreadsheetId:file.getId(),callbackSecret:secret,propertyAddress:propertyAddress},'central',runId);} }catch(e){ Logger.log('[TACS '+runId+'] ERROR '+e.message); }}
 function parseMetric_(raw){ if(raw==null||raw==='') return null; if(typeof raw==='number') return raw>1? raw/100: raw; var s=String(raw).trim(); if(!s) return null; var pct=s.indexOf('%')!==-1; var num=parseFloat(s.replace(/[^0-9.+-]/g,'')); if(isNaN(num)) return null; return (pct||num>1)? num/100: num; }
