@@ -408,14 +408,28 @@ function runInitialSetup() {
         // --- End Step 2 ---
 
         // --- Step 3: Store Credentials ---
-        // Inside runInitialSetup, in Step 3: Store Credentials
-        Logger.log(`[${functionName}] 3. Storing credentials securely...`);
+        Logger.log(`[${functionName}] 3. Storing credentials & static IDs (if provided)...`);
         scriptProps.setProperty('privateKey', credentials.privateKey);
-        scriptProps.setProperty('apiKey', credentials.apiKey);                     // Use 'apiKey'
-        scriptProps.setProperty('staticMapsApiKey', credentials.staticMapsApiKey); // Use 'staticMapsApiKey'
+        scriptProps.setProperty('apiKey', credentials.apiKey);
+        scriptProps.setProperty('staticMapsApiKey', credentials.staticMapsApiKey);
         scriptProps.setProperty('userEmail', credentials.userEmail);
         scriptProps.setProperty('gcpProjectId', credentials.gcpProjectId);
         scriptProps.setProperty('serviceAccountEmail', credentials.serviceAccountEmail);
+        // Optionally provided static IDs from centralized response (only set if not already set locally)
+        try {
+            if (credentials.preliminarySheetId && !scriptProps.getProperty('PRELIMINARY_SHEET_ID')) {
+                scriptProps.setProperty('PRELIMINARY_SHEET_ID', credentials.preliminarySheetId);
+                Logger.log(`[${functionName}]       Set PRELIMINARY_SHEET_ID from centralized response.`);
+            }
+            if (credentials.dataSpreadsheetId && !scriptProps.getProperty('DATA_SPREADSHEET_ID')) {
+                scriptProps.setProperty('DATA_SPREADSHEET_ID', credentials.dataSpreadsheetId);
+                Logger.log(`[${functionName}]       Set DATA_SPREADSHEET_ID from centralized response.`);
+            }
+            if (credentials.slidesTemplateId && !scriptProps.getProperty('SLIDES_TEMPLATE_ID')) {
+                scriptProps.setProperty('SLIDES_TEMPLATE_ID', credentials.slidesTemplateId);
+                Logger.log(`[${functionName}]       Set SLIDES_TEMPLATE_ID from centralized response.`);
+            }
+        } catch(idErr){ Logger.log(`[${functionName}]       Warning storing static IDs: ${idErr.message}`);}        
         Logger.log(`[${functionName}] Stored properties: apiKey, staticMapsApiKey, userEmail, gcpProjectId, serviceAccountEmail (privateKey hidden)`);
 
 
