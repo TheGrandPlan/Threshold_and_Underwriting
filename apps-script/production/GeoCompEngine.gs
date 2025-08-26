@@ -652,6 +652,25 @@ function populateExecutiveSummaryCompsTable(ctx,cache){
 }
 
 function clearChartDataForHiddenRows(ctx){var sheet=ctx.sheet,start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),cols=[18,20,23];for(var r=start;r<=last;r++)if(sheet.isRowHiddenByUser(r))cols.forEach(c=>{if(c<=sheet.getMaxColumns())sheet.getRange(r,c).clearContent()})}
+function clearChartDataForHiddenRows(ctx){
+	var sheet=ctx.sheet; if(!sheet) return; var start=ctx.config.COMP_RESULTS_START_ROW, last=sheet.getLastRow();
+	if(last<start) return; var cols=[18,20,23];
+	// Pre-compute column letters once
+	var colLetters={}; cols.forEach(function(c){colLetters[c]=columnNumberToLetter(c);});
+	var a1ByCol={18:[],20:[],23:[]};
+	for(var r=start;r<=last;r++){
+		if(sheet.isRowHiddenByUser(r)){
+			for(var i=0;i<cols.length;i++){
+				var c=cols[i]; if(c<=sheet.getMaxColumns()) a1ByCol[c].push(colLetters[c]+r);
+			}
+		}
+	}
+	// Batch clear via RangeList per column to minimize API calls
+	for(var cKey in a1ByCol){ if(a1ByCol[cKey].length){ sheet.getRangeList(a1ByCol[cKey]).clearContent(); } }
+}
+
+// Utility: convert 1-based column number to letter (e.g., 1->A, 27->AA)
+function columnNumberToLetter(n){ var s=''; while(n>0){ var m=(n-1)%26; s=String.fromCharCode(65+m)+s; n=Math.floor((n-1)/26);} return s; }
 function applyFormulasToRows(sheet,rows,templateRow){var cols=[14,18,19,20,21,22,23],formulas={};cols.forEach(c=>{try{formulas[c]=sheet.getRange(templateRow,c).getFormulaR1C1()}catch(e){formulas[c]=null}});rows.forEach(r=>{cols.forEach(c=>{if(formulas[c])sheet.getRange(r,c).setFormulaR1C1(formulas[c])})});SpreadsheetApp.flush()}
 
 function generateStaticMapUrl(subject,compCoords,key,w=640,h=400){
