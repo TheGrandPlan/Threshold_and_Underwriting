@@ -54,7 +54,7 @@ const CHART_SERIES_STYLE={0:{color:'#d32f2f',pointSize:7},1:{color:'#2e7d32',poi
 const CHART_LEGEND_POSITION='none';
 function withGlobalLock(key,fn){var lock=LockService.getScriptLock();if(!lock.tryLock(5000)){Logger.log('[LOCK] Busy '+key);return;}try{return fn()}finally{lock.releaseLock()}}
 
-const context={spreadsheet:null,sheet:null,dataSpreadsheet:null,dataSheet:null,compProperties:[],config:{MASTER_SPREADSHEET_ID:SpreadsheetApp.getActiveSpreadsheet().getId(),MASTER_SHEET_NAME:'Sales Comps',ADDRESS_CELL:'A3',COMP_RADIUS_CELL:'P4',DATE_FILTER_CELL:'P5',AGE_FILTER_CELL:'P7',SIZE_FILTER_CELL:'P9',SUBJECT_SIZE_CELL:'G3',ANNUNCIATOR_CELL:'P10',SD_MULTIPLIER_CELL:'P11',COMP_RESULTS_START_ROW:33,COMP_RESULTS_START_COLUMN:'A',DATA_SPREADSHEET_ID:getProp('DATA_SPREADSHEET_ID',''),DATA_SHEET_NAME:'Current Comps'},filters:{radius:0,date:null,yearBuilt:null,sizePercentage:0},visibleRows:[]};
+const context={spreadsheet:null,sheet:null,dataSpreadsheet:null,dataSheet:null,compProperties:[],subjectCoords:null,config:{MASTER_SPREADSHEET_ID:SpreadsheetApp.getActiveSpreadsheet().getId(),MASTER_SHEET_NAME:'Sales Comps',ADDRESS_CELL:'A3',COMP_RADIUS_CELL:'P4',DATE_FILTER_CELL:'P5',AGE_FILTER_CELL:'P7',SIZE_FILTER_CELL:'P9',SUBJECT_SIZE_CELL:'G3',ANNUNCIATOR_CELL:'P10',SD_MULTIPLIER_CELL:'P11',COMP_RESULTS_START_ROW:33,COMP_RESULTS_START_COLUMN:'A',DATA_SPREADSHEET_ID:getProp('DATA_SPREADSHEET_ID',''),DATA_SHEET_NAME:'Current Comps'},filters:{radius:0,date:null,yearBuilt:null,sizePercentage:0},visibleRows:[],_visibleCompCache:null};
 function initializeContext(){
 	try{
 		// Refresh data spreadsheet ID from properties if it was populated after script load
@@ -332,6 +332,8 @@ function main(ctx){
 		if(coords) debugLog('geocode: lat='+coords.lat+' lng='+coords.lng); else debugLog('geocode: failed for address');
 		if(!coords){ Logger.log('[MAIN] Abort: geocode failed (likely missing apiKey or SETUP_COMPLETE not true).'); return; }
 		var comps=searchComps(coords,radius);
+		// Cache subject coords for later analytics (avoid re-geocoding in updateAnalysisOutputs)
+		context.subjectCoords=coords;
 		debugLog('comps: raw count='+comps.length);
 		importCompData(comps,context);
 		if(comps.length){
@@ -505,55 +507,99 @@ function importCompData(props,ctx){
 
 function updateAnalysisOutputs(ctx){
 	try{
-		// Guard: if zero visible comps, skip heavy analytics to avoid sporadic IllegalStateException
-		var conf=ctx.config, sheet=ctx.sheet, visible=0; if(sheet){ for(var r=conf.COMP_RESULTS_START_ROW;r<=sheet.getLastRow();r++) if(!sheet.isRowHiddenByUser(r)) {visible++; if(visible>0) break;} }
-		if(visible===0){ debugLog('updateAnalysisOutputs: skipped (no visible comps).'); return; }
-		calculateTrendlineAndPricePerSqft(ctx);
-		updateChartWithMargins(ctx);
-		// Enforce scatter chart series styles after any structural or data changes
-		try{enforceChartStyles(ctx);}catch(_s){debugLog('enforceChartStyles error '+_s);}
-		populateExecutiveSummaryCompsTable(ctx);
+		var tAll=Date.now();
+		var conf=ctx.config, sheet=ctx.sheet;
+		if(!sheet) return;
+		// Build / reuse visible comps cache (bulk read)
+		var cache=collectVisibleCompData(ctx);
+		if(cache.rows.length===0){ debugLog('updateAnalysisOutputs: skipped (no visible comps).'); return; }
+		var t1=Date.now();
+		calculateTrendlineAndPricePerSqft(ctx,cache); // now supports cached dataset
+		var t2=Date.now();
+		updateChartWithMargins(ctx,cache);
+		var t3=Date.now();
+		try{enforceChartStyles(ctx);}catch(_s){debugLog('enforceChartStyles error '+_s);} // style stabilization
+		populateExecutiveSummaryCompsTable(ctx,cache);
+		var t4=Date.now();
+		// Map generation (reuse cached coords + subjectCoords when present)
 		var sp=PropertiesService.getScriptProperties(),mapKey=sp.getProperty('staticMapsApiKey');
 		if(mapKey){
-			var subj=ctx.sheet.getRange(ctx.config.ADDRESS_CELL).getValue(),coords=getCoordinatesFromAddress(subj);
+			var coords=ctx.subjectCoords; // prefer cached
+			if(!coords){
+				var subj=sheet.getRange(conf.ADDRESS_CELL).getValue();
+				coords=getCoordinatesFromAddress(subj);
+				ctx.subjectCoords=coords; // cache for future
+			}
 			if(coords){
-				var visible=[],start=ctx.config.COMP_RESULTS_START_ROW,last=ctx.sheet.getLastRow();
-				for(var r=start;r<=last;r++) if(!ctx.sheet.isRowHiddenByUser(r)){
-					var lat=ctx.sheet.getRange('O'+r).getValue(),lng=ctx.sheet.getRange('P'+r).getValue();
-					if(lat&&lng) visible.push({lat:lat,lng:lng});
-				}
-				var mapUrl=generateStaticMapUrl(coords,visible,mapKey);
+				var markers=cache.latLngs;
+				var mapUrl=generateStaticMapUrl(coords,markers,mapKey);
 				var exec=ctx.spreadsheet.getSheetByName('Executive Summary');
 				if(exec&&mapUrl) insertMapIntoSheet(exec,mapUrl,'G21');
-				debugLog('map: markers='+visible.length+' urlLen='+(mapUrl?mapUrl.length:0));
+				debugLog('map: markers='+markers.length+' urlLen='+(mapUrl?mapUrl.length:0));
 			}
 		}
+		var t5=Date.now();
 		updatePreliminarySheet();
-		debugLog('updateAnalysisOutputs complete');
+		debugLog('updateAnalysisOutputs complete timings(ms): cache='+(t1-tAll)+' trend='+(t2-t1)+' chart='+(t3-t2)+' summary='+(t4-t3)+' map='+(t5-t4)+' total='+(Date.now()-tAll));
 	}catch(e){
 		Logger.log('update outputs error '+e.message);
 	}
 }
 
-function calculateTrendlineAndPricePerSqft(ctx){var sheet=ctx.sheet,start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),data=sheet.getRange('G'+start+':N'+last).getValues(),sizes=[],pps=[];for(var i=0;i<data.length;i++){var row=start+i;if(sheet.isRowHiddenByUser(row))continue;var s=data[i][0],p=data[i][7];if(s>0&&p>0){sizes.push(s);pps.push(p)}}if(!sizes.length)return;var N=sizes.length,sumX=sizes.reduce((a,b)=>a+b,0),sumY=pps.reduce((a,b)=>a+b,0),sumXY=sizes.reduce((s,x,i)=>s+x*pps[i],0),sumX2=sizes.reduce((s,x)=>s+x*x,0),slope=(N*sumXY-sumX*sumY)/(N*sumX2-sumX*sumX),inter=(sumY-slope*sumX)/N,subject=sheet.getRange('G3:G5').getValues(),out=[];subject.forEach(function(r){var hs=r[0];out.push([hs>0?((slope*hs)+inter).toFixed(2):''])});sheet.getRange('N3:N5').setValues(out);debugLog('trendline: points='+N+' slope='+slope.toFixed(6)+' intercept='+inter.toFixed(2));
+// Collect visible comp row data with a single bulk range read; caches on context until next filter/import.
+function collectVisibleCompData(ctx){
+	var conf=ctx.config, sheet=ctx.sheet, start=conf.COMP_RESULTS_START_ROW, last=sheet.getLastRow();
+	var rowCount=last-start+1; if(rowCount<=0) return {rows:[],sizes:[],pps:[],prices:[],latLngs:[]};
+	// If cache exists and last row unchanged, reuse
+	if(ctx._visibleCompCache && ctx._visibleCompCache._stamp===last) return ctx._visibleCompCache;
+	var values=sheet.getRange(start,1,rowCount,16).getValues(); // columns A..P (ensure lat/lng included)
+	var rows=[],sizes=[],pps=[],prices=[],latLngs=[];
+	for(var i=0;i<rowCount;i++){
+		var rowNum=start+i;
+		if(sheet.isRowHiddenByUser(rowNum)) continue; // unavoidable per-row check (no bulk API)
+		var row=values[i];
+		var address=row[0];
+		var size=row[6];
+		var salePrice=row[10];
+		var distance=row[12];
+		var pricePerSqft=row[13]; // col 14 (N)
+		var lat=row[14]; // O
+		var lng=row[15]; // P
+		rows.push({row:rowNum,address:address,size:size,price:salePrice,distance:distance,pricePerSqft:pricePerSqft,lat:lat,lng:lng});
+		if(size>0 && pricePerSqft>0){ sizes.push(size); pps.push(pricePerSqft); }
+		if(size>0 && salePrice>0){ prices.push(salePrice); }
+		if(lat && lng) latLngs.push({lat:lat,lng:lng});
+	}
+	var cache={rows:rows,sizes:sizes,pps:pps,prices:prices,latLngs:latLngs,_stamp:last};
+	ctx._visibleCompCache=cache;
+	return cache;
 }
 
-function updateChartWithMargins(ctx){
-	var sheet=ctx.sheet,charts=sheet.getCharts(),hp=null,pps=null;
+function calculateTrendlineAndPricePerSqft(ctx,cache){
+	var sheet=ctx.sheet;
+	cache=cache||collectVisibleCompData(ctx);
+	var sizes=cache.sizes, pps=cache.pps;
+	if(!sizes.length) return;
+	var N=sizes.length,sumX=sizes.reduce((a,b)=>a+b,0),sumY=pps.reduce((a,b)=>a+b,0),sumXY=sizes.reduce((s,x,i)=>s+x*pps[i],0),sumX2=sizes.reduce((s,x)=>s+x*x,0),den=(N*sumX2 - sumX*sumX); if(den===0) return; var slope=(N*sumXY - sumX*sumY)/den,inter=(sumY - slope*sumX)/N;
+	var subject=sheet.getRange('G3:G5').getValues(),out=[];subject.forEach(function(r){var hs=r[0];out.push([hs>0?((slope*hs)+inter).toFixed(2):''])});
+	sheet.getRange('N3:N5').setValues(out);
+	debugLog('trendline: points='+N+' slope='+slope.toFixed(6)+' intercept='+inter.toFixed(2));
+}
+
+function updateChartWithMargins(ctx,cache){
+	var sheet=ctx.sheet,charts=sheet.getCharts(),hp=null,ppsChart=null;
 	charts.forEach(function(c){
 		var t=c.getOptions().get('title');
-		if(t==='Home Price ($) x Home Size (sq.ft.)'){
-			hp=c;
-		} else if(t==='Home Prices per Square Foot ($) x Home Size (sq.ft.)'){
-			pps=c;
-		}
+		if(t==='Home Price ($) x Home Size (sq.ft.)') hp=c; else if(t==='Home Prices per Square Foot ($) x Home Size (sq.ft.)') ppsChart=c;
 	});
-	if(!hp||!pps) return;
-	var start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),sizes=[],ppsArr=[],prices=[];
-	for(var r=start;r<=last;r++) if(!sheet.isRowHiddenByUser(r)){
-		var hs=sheet.getRange('G'+r).getValue(),pp=sheet.getRange('N'+r).getValue(),pr=sheet.getRange('K'+r).getValue();
-		if(hs>0&&pp>0&&pr>0){
-			sizes.push(hs);ppsArr.push(pp);prices.push(pr);
+	if(!hp||!ppsChart) return;
+	cache=cache||collectVisibleCompData(ctx);
+	if(cache.rows.length===0) return;
+	var sizes=[], ppsArr=[], prices=[];
+	for(var i=0;i<cache.rows.length;i++){
+		var r=cache.rows[i];
+		if(r.size>0 && r.pricePerSqft>0 && r.price>0){
+			sizes.push(r.size); ppsArr.push(r.pricePerSqft); prices.push(r.price);
 		}
 	}
 	if(!sizes.length) return;
@@ -564,7 +610,7 @@ function updateChartWithMargins(ctx){
 		.setOption('vAxis.minValue',Math.max(0,minPr-mPr))
 		.setOption('vAxis.maxValue',maxPr+mPr)
 		.build());
-	sheet.updateChart(pps.modify()
+	sheet.updateChart(ppsChart.modify()
 		.setOption('hAxis.minValue',Math.max(0,minS-mS))
 		.setOption('hAxis.maxValue',maxS+mS)
 		.setOption('vAxis.minValue',Math.max(0,minPPS-mP))
@@ -594,7 +640,16 @@ function enforceChartStyles(ctx){
 	});
 }
 
-function populateExecutiveSummaryCompsTable(ctx){var sales=ctx.sheet,exec=ctx.spreadsheet.getSheetByName('Executive Summary');if(!exec)return;var start=ctx.config.COMP_RESULTS_START_ROW,last=sales.getLastRow(),data=[],maxCol=14;if(last>=start){var all=sales.getRange(start,1,last-start+1,maxCol).getValues();for(var i=0;i<all.length;i++){var row=start+i;if(!sales.isRowHiddenByUser(row)){data.push({address:all[i][0],homeSize:all[i][6],salePrice:all[i][10],distance:all[i][12],pricePerSqft:all[i][13]})}}}data.sort((a,b)=>(parseFloat(a.distance)||Infinity)-(parseFloat(b.distance)||Infinity));var top=data.slice(0,10),table=top.map(c=>[c.address||'N/A',c.homeSize||null,c.salePrice||null,c.distance!=null?Number(c.distance).toFixed(2):null,c.pricePerSqft||null]);var rng=exec.getRange('B23:F32');rng.clearContent();if(table.length)exec.getRange(23,2,table.length,5).setValues(table)}
+function populateExecutiveSummaryCompsTable(ctx,cache){
+	var exec=ctx.spreadsheet.getSheetByName('Executive Summary'); if(!exec) return;
+	cache=cache||collectVisibleCompData(ctx);
+	if(cache.rows.length===0){ exec.getRange('B23:F32').clearContent(); return; }
+	// Sort by distance (distance may be string -> parseFloat)
+	var sorted=cache.rows.slice().sort(function(a,b){ var da=parseFloat(a.distance)||Infinity, db=parseFloat(b.distance)||Infinity; return da-db; });
+	var top=sorted.slice(0,10);
+	var table=top.map(function(c){ return [c.address||'N/A', c.size||null, c.price||null, c.distance!=null?Number(c.distance).toFixed(2):null, c.pricePerSqft||null]; });
+	var rng=exec.getRange('B23:F32'); rng.clearContent(); if(table.length) exec.getRange(23,2,table.length,5).setValues(table);
+}
 
 function clearChartDataForHiddenRows(ctx){var sheet=ctx.sheet,start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),cols=[18,20,23];for(var r=start;r<=last;r++)if(sheet.isRowHiddenByUser(r))cols.forEach(c=>{if(c<=sheet.getMaxColumns())sheet.getRange(r,c).clearContent()})}
 function applyFormulasToRows(sheet,rows,templateRow){var cols=[14,18,19,20,21,22,23],formulas={};cols.forEach(c=>{try{formulas[c]=sheet.getRange(templateRow,c).getFormulaR1C1()}catch(e){formulas[c]=null}});rows.forEach(r=>{cols.forEach(c=>{if(formulas[c])sheet.getRange(r,c).setFormulaR1C1(formulas[c])})});SpreadsheetApp.flush()}
