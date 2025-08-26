@@ -93,9 +93,16 @@ function runInvestorSplitOptimization(){
 
 function runInitialSetup(){
 	var sp=PropertiesService.getScriptProperties(),status=sp.getProperty('SETUP_COMPLETE');
-	if(status==='true') return;
+	// Allow re-run if static IDs missing even if status true
+	var essentialMissing = ! _looksLikeId(sp.getProperty('DATA_SPREADSHEET_ID')) ||
+												 ! _looksLikeId(sp.getProperty('PRELIMINARY_SHEET_ID')) ||
+												 ! _looksLikeId(sp.getProperty('SLIDES_TEMPLATE_ID'));
+	if(status==='true' && !essentialMissing){
+		Logger.log('Setup already complete and essentials present.');
+		return;
+	}
 	if(!doesSetupTriggerExist()){ createSetupTrigger(); SpreadsheetApp.getUi().alert('Setup trigger created. Will auto-run shortly.'); return; }
-	Logger.log('Running setup');
+	Logger.log('Running setup (forced='+essentialMissing+')');
 	try{
 		var ssId=SpreadsheetApp.getActiveSpreadsheet().getId(),file=DriveApp.getFileById(ssId),desc=file.getDescription();
 		if(!desc) throw new Error('Spreadsheet description JSON missing');
@@ -103,6 +110,8 @@ function runInitialSetup(){
 		var cred=null; function tryFetch(action,payload){ var r=UrlFetchApp.fetch(requestUrl,{method:'post',contentType:'application/json',payload:JSON.stringify(payload),muteHttpExceptions:true}); if(r.getResponseCode()===200){ var body=JSON.parse(r.getContentText()); if(!body.error) return body; throw new Error(body.error||'Unknown credential error'); } throw new Error('HTTP '+r.getResponseCode()); }
 		try{ cred=tryFetch('getCredentials',{action:'getCredentials',spreadsheetId:ssId,callbackSecret:secret}); }
 		catch(e){ cred=tryFetch('refreshCredentials',{action:'refreshCredentials',spreadsheetId:ssId,originalSecret:secret}); }
+		// Log keys present
+		Object.keys(cred).forEach(function(k){ if(k.length<40) Logger.log('cred.'+k+' present'); });
 		['privateKey','apiKey','staticMapsApiKey','userEmail','gcpProjectId','serviceAccountEmail'].forEach(function(k){ if(cred[k]) sp.setProperty(k,cred[k]); });
 		try{
 			if(cred.preliminarySheetId&&!sp.getProperty('PRELIMINARY_SHEET_ID')) sp.setProperty('PRELIMINARY_SHEET_ID',cred.preliminarySheetId);
@@ -117,7 +126,7 @@ function runInitialSetup(){
 		var ui=SpreadsheetApp.getUi();
 		if(missing.length){
 			sp.setProperty('SETUP_COMPLETE','incomplete');
-			ui.alert('Setup partially complete. Missing: '+missing.join(', ')+'\nAdd these Script Properties then re-run Run Initial Setup.');
+			ui.alert('Setup partially complete. Missing: '+missing.join(', ')+'\nEnsure central service returns these fields or set manually then run Run Initial Setup again.');
 			Logger.log('Setup incomplete; missing '+missing.join(','));
 		}else{
 			sp.setProperty('SETUP_COMPLETE','true');
@@ -129,6 +138,29 @@ function runInitialSetup(){
 		Logger.log('Setup error '+e.message);
 		PropertiesService.getScriptProperties().setProperty('SETUP_COMPLETE','fatal_error');
 	}
+}
+
+// Manual repair function: call after central service updated to back-fill missing static IDs without resetting everything.
+function repairMissingStaticIds(){
+	var sp=PropertiesService.getScriptProperties();
+	if(_looksLikeId(sp.getProperty('DATA_SPREADSHEET_ID')) && _looksLikeId(sp.getProperty('PRELIMINARY_SHEET_ID')) && _looksLikeId(sp.getProperty('SLIDES_TEMPLATE_ID'))){
+		Logger.log('All static IDs already present; nothing to repair.');
+		return;
+	}
+	var ssId=SpreadsheetApp.getActiveSpreadsheet().getId(),file=DriveApp.getFileById(ssId),desc=file.getDescription();
+	if(!desc){ Logger.log('repairMissingStaticIds: description missing'); return; }
+	try{
+		var meta=JSON.parse(desc),requestUrl=meta.requestUrl,secret=meta.uniqueSecret; if(!requestUrl||!secret){ Logger.log('repairMissingStaticIds: missing requestUrl/secret'); return; }
+		var payload={action:'getCredentials',spreadsheetId:ssId,callbackSecret:secret};
+		var r=UrlFetchApp.fetch(requestUrl,{method:'post',contentType:'application/json',payload:JSON.stringify(payload),muteHttpExceptions:true});
+		if(r.getResponseCode()!==200){ Logger.log('repairMissingStaticIds: HTTP '+r.getResponseCode()); return; }
+		var body=JSON.parse(r.getContentText());
+		if(body.error){ Logger.log('repairMissingStaticIds: '+body.error); return; }
+		if(body.preliminarySheetId&&!sp.getProperty('PRELIMINARY_SHEET_ID')) sp.setProperty('PRELIMINARY_SHEET_ID',body.preliminarySheetId);
+		if(body.dataSpreadsheetId&&!sp.getProperty('DATA_SPREADSHEET_ID')) sp.setProperty('DATA_SPREADSHEET_ID',body.dataSpreadsheetId);
+		if(body.slidesTemplateId&&!sp.getProperty('SLIDES_TEMPLATE_ID')) sp.setProperty('SLIDES_TEMPLATE_ID',body.slidesTemplateId);
+		Logger.log('repairMissingStaticIds: updated any missing IDs.');
+	}catch(e){ Logger.log('repairMissingStaticIds error '+e.message); }
 }
 function doesSetupTriggerExist(){try{var t=ScriptApp.getProjectTriggers();for(var i=0;i<t.length;i++)if(t[i].getHandlerFunction()==='runInitialSetup'&&t[i].getEventType()===ScriptApp.EventType.CLOCK)return true;}catch(e){}return false}
 function createSetupTrigger(){deleteOwnSetupTrigger();ScriptApp.newTrigger('runInitialSetup').timeBased().after(60000).create()}
