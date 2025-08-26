@@ -189,14 +189,60 @@ function populateExecutiveSummaryCompsTable(ctx){var sales=ctx.sheet,exec=ctx.sp
 function clearChartDataForHiddenRows(ctx){var sheet=ctx.sheet,start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),cols=[18,20,23];for(var r=start;r<=last;r++)if(sheet.isRowHiddenByUser(r))cols.forEach(c=>{if(c<=sheet.getMaxColumns())sheet.getRange(r,c).clearContent()})}
 function applyFormulasToRows(sheet,rows,templateRow){var cols=[14,18,19,20,21,22,23],formulas={};cols.forEach(c=>{try{formulas[c]=sheet.getRange(templateRow,c).getFormulaR1C1()}catch(e){formulas[c]=null}});rows.forEach(r=>{cols.forEach(c=>{if(formulas[c])sheet.getRange(r,c).setFormulaR1C1(formulas[c])})});SpreadsheetApp.flush()}
 
-function generateStaticMapUrl(subject,compCoords,key,w=640,h=400){if(!subject||!key)return null;var base='https://maps.googleapis.com/maps/api/staticmap',p=['size='+w+'x'+h,'maptype=roadmap'],vis=[subject.lat+','+subject.lng];(compCoords||[]).forEach(c=>{if(c.lat&&c.lng)vis.push(c.lat+','+c.lng)});if(vis.length>1)p.push('visible='+vis.join('%7C'));else{p.push('center='+subject.lat+','+subject.lng);p.push('zoom=15')}p.push('markers=color:red%7Clabel:S%7C'+subject.lat+','+subject.lng);(compCoords||[]).forEach(function(c,i){if(c.lat&&c.lng)p.push('markers=color:green%7Clabel:'+(i<9?i+1:'C')+'%7C'+c.lat+','+c.lng)});p.push('key='+key);return base+'?'+p.join('&')}
+function generateStaticMapUrl(subject,compCoords,key,w=640,h=400){
+	if(!subject||!key) return null;
+	var base='https://maps.googleapis.com/maps/api/staticmap',
+		p=['size='+w+'x'+h,'maptype=roadmap'],
+		vis=[subject.lat+','+subject.lng];
+	(compCoords||[]).forEach(function(c){ if(c.lat&&c.lng) vis.push(c.lat+','+c.lng); });
+	if(vis.length>1){
+		p.push('visible='+vis.join('%7C'));
+	} else {
+		p.push('center='+subject.lat+','+subject.lng);
+		p.push('zoom=15');
+	}
+	p.push('markers=color:red%7Clabel:S%7C'+subject.lat+','+subject.lng);
+	(compCoords||[]).forEach(function(c,i){ if(c.lat&&c.lng) p.push('markers=color:green%7Clabel:'+(i<9?i+1:'C')+'%7C'+c.lat+','+c.lng); });
+	p.push('key='+key);
+	return base+'?'+p.join('&');
+}
 function insertMapIntoSheet(sheet,url,a1,merged){try{if(merged)sheet.getRange(merged).clearContent();sheet.getRange(a1).setFormula('=IMAGE("'+url+'",2)')}catch(e){}}
 
 function normalizeAddress(a){if(!a)return'';return String(a).toLowerCase().replace(/[.,\/#!$%\^&\*;:{}=\-_`~()]/g,'').replace(/\b(street|str)\b/g,'st').replace(/\b(road|rd)\b/g,'rd').replace(/\b(avenue|ave)\b/g,'ave').replace(/\b(boulevard|blvd)\b/g,'blvd').replace(/\b(lane|ln)\b/g,'ln').replace(/\b(place|plz|pl)\b/g,'pl').replace(/\b(court|ct)\b/g,'ct').replace(/\b(cove|cv)\b/g,'cv').replace(/\b(trail|trl)\b/g,'trl').replace(/\b(drive|dr)\b/g,'dr').replace(/\b(circle|cir)\b/g,'cir').replace(/\b(unit|apt|suite)\b/g,'#').replace(/\bnorth\b/g,'n').replace(/\bsouth\b/g,'s').replace(/\beast\b/g,'e').replace(/\bwest\b/g,'w').trim().replace(/\s+/g,' ')}
 function findRowByAddressInPreliminary(sheet,address){var tgt=normalizeAddress(address);if(!tgt)return null;var rng=sheet.getRange('B4:B'+sheet.getLastRow()).getValues();for(var i=0;i<rng.length;i++){var cur=rng[i][0];if(cur&&normalizeAddress(cur)===tgt)return i+4}return null}
 function updatePreliminarySheet(){var ss=SpreadsheetApp.getActiveSpreadsheet(),das=ss.getSheetByName('Detailed Analysis'),exec=ss.getSheetByName('Executive Summary');if(!das||!exec||!PRELIMINARY_SHEET_ID)return;var simple=das.getRange(METRIC_CELLS.SIMPLE_ADDRESS).getValue();if(!simple)return;var net=exec.getRange(METRIC_CELLS.NET_PROFIT).getValue(),roi=exec.getRange(METRIC_CELLS.ROI).getValue(),margin=exec.getRange(METRIC_CELLS.MARGIN).getValue();if(net===''&&roi===''&&margin==='')return;var prelim=SpreadsheetApp.openById(PRELIMINARY_SHEET_ID),sheet=prelim.getSheetByName(PRELIMINARY_SHEET_NAME);if(!sheet)return;var row=findRowByAddressInPreliminary(sheet,simple);if(row)sheet.getRange(row,23,1,3).setValues([[net,roi,margin]])}
 
-function calculateInvestorSplitForTargetIRR(sheet,target,splitCell,irrCell,profitCell){var MAX=100,TOL=0.001,step=0.01,profit=sheet.getRange(profitCell).getValue();if(!(profit>0))return null;var split=sheet.getRange(splitCell).getValue();if(!(split>0&&split<1))split=.5;for(var i=0;i<MAX;i++){sheet.getRange(splitCell).setValue(split);SpreadsheetApp.flush();Utilities.sleep(400);var irr=sheet.getRange(irrCell).getValue();if(typeof irr!=='number'||isNaN(irr)){split+=step*0.1;split=Math.min(.99,Math.max(.01,split));continue}var diff=irr-target;if(Math.abs(diff)<=TOL)return split;if(diff>0)split-=step;else split+=step;split=Math.min(.99,Math.max(.01,split));if(Math.abs(diff)<.05)step=.005 else step=.01}return split}
+function calculateInvestorSplitForTargetIRR(sheet,target,splitCell,irrCell,profitCell){
+	var MAX=100,TOL=0.001,step=0.01,profit=sheet.getRange(profitCell).getValue();
+	if(!(profit>0)) return null;
+	var split=sheet.getRange(splitCell).getValue();
+	if(!(split>0&&split<1)) split=.5;
+	for(var i=0;i<MAX;i++){
+		sheet.getRange(splitCell).setValue(split);
+		SpreadsheetApp.flush();
+		Utilities.sleep(400);
+		var irr=sheet.getRange(irrCell).getValue();
+		if(typeof irr!=='number'||isNaN(irr)){
+			split+=step*0.1;
+			split=Math.min(.99,Math.max(.01,split));
+			continue;
+		}
+		var diff=irr-target;
+		if(Math.abs(diff)<=TOL) return split;
+		if(diff>0){
+			split-=step;
+		} else {
+			split+=step;
+		}
+		split=Math.min(.99,Math.max(.01,split));
+		if(Math.abs(diff)<.05){
+			step=.005;
+		} else {
+			step=.01;
+		}
+	}
+	return split;
+}
 
 // Presentation generation (kept concise)
 function createPresentationFromSheet(){
