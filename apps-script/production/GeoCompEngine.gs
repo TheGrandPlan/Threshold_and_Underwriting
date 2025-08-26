@@ -401,18 +401,67 @@ function recoverSetupIfComplete(){
 function refilterAndAnalyze(){return withGlobalLock('refilter',function(){initializeContext();if(!context.sheet)return;applyAllFilters(context);SpreadsheetApp.flush();var conf=context.config,sheet=context.sheet,start=conf.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),vis=[];for(var r=start;r<=last;r++)if(!sheet.isRowHiddenByUser(r))vis.push(r);applyFormulasToRows(sheet,vis,32);clearChartDataForHiddenRows(context);updateAnalysisOutputs(context)})}
 
 function applyAllFilters(){
-  var sheet=context.sheet,conf=context.config;if(!sheet)return;
-  var start=conf.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),count=last-start+1;
-  if(count>0)sheet.showRows(start,count); // reset all rows visible before applying filters afresh
-  function visCount(){var v=0,lr=sheet.getLastRow();for(var r=start;r<=lr;r++) if(!sheet.isRowHiddenByUser(r)) v++;return v;}
-  var before=visCount();debugLog('filters: start visible='+before);
-  var sd=sheet.getRange(conf.SD_MULTIPLIER_CELL).getValue();
-  var t,hidden;
-  if(!isNaN(sd)&&sd>0){t=Date.now();hidden=applySDFilter(context,sd);debugLog('filters: after SD visible='+visCount()+' (sdMultiplier='+sd+', hid='+hidden+', ms='+(Date.now()-t)+')');}
-  t=Date.now();hidden=applyDateFilter(context);debugLog('filters: after Date visible='+visCount()+' (P6='+(sheet.getRange('P6').getValue() instanceof Date?sheet.getRange('P6').getDisplayValue():'(none)')+', hid='+hidden+', ms='+(Date.now()-t)+')');
-  t=Date.now();hidden=applyAgeFilter(context);debugLog('filters: after Age visible='+visCount()+' (P8='+sheet.getRange('P8').getValue()+', hid='+hidden+', ms='+(Date.now()-t)+')');
-  t=Date.now();hidden=applySizeFilter(context);debugLog('filters: after Size visible='+visCount()+' (subjectSize='+sheet.getRange(conf.SUBJECT_SIZE_CELL).getValue()+', pctRaw='+sheet.getRange(conf.SIZE_FILTER_CELL).getValue()+', hid='+hidden+', ms='+(Date.now()-t)+')');
-  debugLog('applyAllFilters complete finalVisible='+visCount());
+	var sheet=context.sheet,conf=context.config; if(!sheet) return;
+	var start=conf.COMP_RESULTS_START_ROW,last=sheet.getLastRow();
+	var rowCount=last-start+1; if(rowCount<=0) return;
+	// Always unhide first to get a clean baseline
+	sheet.showRows(start,rowCount);
+	var tAll=Date.now();
+	// Pre-fetch user inputs
+	var sdMultiplier=sheet.getRange(conf.SD_MULTIPLIER_CELL).getValue();
+	var dateThreshold=sheet.getRange('P6').getValue(); // Date filter cell (display P6, internal conf.DATE_FILTER_CELL is P5?) legacy used P6
+	var yearThreshold=sheet.getRange('P8').getValue();
+	var sizePctRaw=sheet.getRange(conf.SIZE_FILTER_CELL).getValue();
+	var subjectSize=sheet.getRange(conf.SUBJECT_SIZE_CELL).getValue();
+	if(sizePctRaw>1) sizePctRaw/=100;
+	var lowSize=(subjectSize>0)?subjectSize*(1-sizePctRaw):NaN;
+	var highSize=(subjectSize>0)?subjectSize*(1+sizePctRaw):NaN;
+	if(!isNaN(lowSize)&&!isNaN(highSize)) sheet.getRange(conf.ANNUNCIATOR_CELL).setValue(Math.round(lowSize)+' sqft - '+Math.round(highSize)+' sqft');
+	// Pre-fetch needed columns in as few calls as possible
+	var sizeCol = sheet.getRange('G'+start+':G'+last).getValues();      // home size
+	var yearCol = sheet.getRange('I'+start+':I'+last).getValues();      // year built
+	var dateCol = sheet.getRange('J'+start+':J'+last).getValues();      // sale date
+	var sdCol   = sheet.getRange(start,14,rowCount,1).getValues();      // metric used for SD filter (col 14)
+	// Compute SD stats first (based on all rows) to mirror previous behavior
+	var t=Date.now(), sdHidden=0, sdMean=0, sdSD=0, lo=null, hi=null;
+	if(!isNaN(sdMultiplier) && sdMultiplier>0){
+		var sdVals=[]; for(var i=0;i<rowCount;i++){var v=sdCol[i][0]; if(v && !isNaN(v) && v>0) sdVals.push(Number(v));}
+		if(sdVals.length>=2){
+			var sum=0; for(var k=0;k<sdVals.length;k++) sum+=sdVals[k];
+			sdMean=sum/sdVals.length; var varAcc=0; for(k=0;k<sdVals.length;k++){varAcc+=Math.pow(sdVals[k]-sdMean,2);} var variance=varAcc/sdVals.length; sdSD=Math.sqrt(variance);
+			lo=sdMean - sdMultiplier*sdSD; hi=sdMean + sdMultiplier*sdSD;
+		}
+	}
+	var hide=new Array(rowCount); for(var h=0;h<rowCount;h++) hide[h]=false;
+	if(lo!=null){
+		for(i=0;i<rowCount;i++){var vv=sdCol[i][0]; if( (isNaN(vv)) || vv<lo || vv>hi){ hide[i]=true; sdHidden++; }}
+	}
+	debugLog('filters(opt): SD pass mean='+(sdMean||0).toFixed?sdMean.toFixed(2):sdMean+' sd='+(sdSD||0).toFixed?sdSD.toFixed(2):sdSD+' lo='+(lo!=null?lo.toFixed(2):'n/a')+' hi='+(hi!=null?hi.toFixed(2):'n/a')+' hid='+sdHidden+' ms='+(Date.now()-t));
+	// Date filter
+	t=Date.now(); var dateHidden=0; if(dateThreshold instanceof Date){
+		for(i=0;i<rowCount;i++){ if(hide[i]) continue; var dv=dateCol[i][0]; if(dv instanceof Date && dv<dateThreshold){ hide[i]=true; dateHidden++; }}
+	}
+	debugLog('filters(opt): Date hid='+dateHidden+' ms='+(Date.now()-t));
+	// Age filter
+	t=Date.now(); var ageHidden=0; if(!isNaN(yearThreshold) && yearThreshold>=1900){
+		for(i=0;i<rowCount;i++){ if(hide[i]) continue; var yv=yearCol[i][0]; if(isNaN(yv) || yv<yearThreshold){ hide[i]=true; ageHidden++; }}
+	}
+	debugLog('filters(opt): Age hid='+ageHidden+' ms='+(Date.now()-t));
+	// Size filter
+	t=Date.now(); var sizeHidden=0; if(subjectSize>0 && !isNaN(lowSize) && !isNaN(highSize)){
+		for(i=0;i<rowCount;i++){ if(hide[i]) continue; var sv=sizeCol[i][0]; if(isNaN(sv) || sv<lowSize || sv>highSize){ hide[i]=true; sizeHidden++; }}
+	}
+	debugLog('filters(opt): Size hid='+sizeHidden+' range='+Math.round(lowSize)+'-'+Math.round(highSize)+' ms='+(Date.now()-t));
+	// Apply hides in contiguous batches
+	t=Date.now();
+	var batchStart=null,batchLen=0,totalHidden=0;
+	for(i=0;i<rowCount;i++){
+		if(hide[i]){ totalHidden++; if(batchStart===null){ batchStart=start+i; batchLen=1; } else { batchLen++; } }
+		else if(batchStart!==null){ sheet.hideRows(batchStart,batchLen); batchStart=null; batchLen=0; }
+	}
+	if(batchStart!==null){ sheet.hideRows(batchStart,batchLen); }
+	var visible=rowCount-totalHidden;
+	debugLog('filters(opt): applied hidden='+totalHidden+' visible='+visible+' hideOps(ms)='+(Date.now()-t)+' totalMs='+(Date.now()-tAll));
 }
 function applySDFilter(ctx,m){var sheet=ctx.sheet,conf=ctx.config,start=conf.COMP_RESULTS_START_ROW,end=sheet.getLastRow(),col=14;if(end<start)return 0;var vals=sheet.getRange(start,col,end-start+1,1).getValues(),arr=[];for(var i=0;i<vals.length;i++){var row=start+i;if(!sheet.isRowHiddenByUser(row)){var v=vals[i][0];if(v&&!isNaN(v)&&v>0)arr.push(Number(v))}}if(arr.length<2)return 0;var mean=arr.reduce((a,b)=>a+b,0)/arr.length,varc=arr.reduce((s,v)=>s+Math.pow(v-mean,2),0)/arr.length,sd=Math.sqrt(varc),lo=mean-m*sd,hi=mean+m*sd,hidden=0;for(i=0;i<vals.length;i++){var row2=start+i;if(!sheet.isRowHiddenByUser(row2)){var v2=vals[i][0];if(isNaN(v2)||v2<lo||v2>hi){sheet.hideRows(row2);hidden++;}}}return hidden}
 function applyDateFilter(ctx){var sheet=ctx.sheet,conf=ctx.config,d=sheet.getRange('P6').getValue();if(!(d instanceof Date))return 0;var last=sheet.getLastRow(),rng=sheet.getRange('J'+conf.COMP_RESULTS_START_ROW+':J'+last).getValues(),hidden=0;for(var i=0;i<rng.length;i++){var sd=rng[i][0],row=conf.COMP_RESULTS_START_ROW+i;if(sd instanceof Date && sd<d && !sheet.isRowHiddenByUser(row)){sheet.hideRows(row);hidden++;}}return hidden}
