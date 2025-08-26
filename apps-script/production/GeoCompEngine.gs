@@ -27,7 +27,28 @@ function withGlobalLock(key,fn){var lock=LockService.getScriptLock();if(!lock.tr
 const context={spreadsheet:null,sheet:null,dataSpreadsheet:null,dataSheet:null,compProperties:[],config:{MASTER_SPREADSHEET_ID:SpreadsheetApp.getActiveSpreadsheet().getId(),MASTER_SHEET_NAME:'Sales Comps',ADDRESS_CELL:'A3',COMP_RADIUS_CELL:'P4',DATE_FILTER_CELL:'P5',AGE_FILTER_CELL:'P7',SIZE_FILTER_CELL:'P9',SUBJECT_SIZE_CELL:'G3',ANNUNCIATOR_CELL:'P10',SD_MULTIPLIER_CELL:'P11',COMP_RESULTS_START_ROW:33,COMP_RESULTS_START_COLUMN:'A',DATA_SPREADSHEET_ID:getProp('DATA_SPREADSHEET_ID',''),DATA_SHEET_NAME:'Current Comps'},filters:{radius:0,date:null,yearBuilt:null,sizePercentage:0},visibleRows:[]};
 function initializeContext(){try{if(!context.spreadsheet)context.spreadsheet=SpreadsheetApp.openById(context.config.MASTER_SPREADSHEET_ID);if(!context.sheet)context.sheet=context.spreadsheet.getSheetByName(context.config.MASTER_SHEET_NAME);if(!context.dataSpreadsheet)context.dataSpreadsheet=SpreadsheetApp.openById(context.config.DATA_SPREADSHEET_ID);if(!context.dataSheet)context.dataSheet=context.dataSpreadsheet.getSheetByName(context.config.DATA_SHEET_NAME);}catch(e){Logger.log('Context init error '+e)}}
 
-function onOpen(){var ui=SpreadsheetApp.getUi(),menu=ui.createMenu('⚙️ Setup');try{var sp=PropertiesService.getScriptProperties(),done=sp.getProperty('SETUP_COMPLETE');if(done!=='true'){menu.addItem('▶️ Run Initial Setup (Required Once)','runInitialSetup');SpreadsheetApp.getActiveSpreadsheet().toast('Run Setup once via menu.','Setup',10);}else menu.addItem('Setup Complete','setupAlreadyDone');}catch(e){menu.addItem('Error','setupAlreadyDone')}menu.addToUi();ui.createMenu('📊 Slides').addItem('▶️ Generate Presentation','createPresentationFromSheet').addToUi();ui.createMenu('⚙️ Calculations').addItem('Optimize Investor Split','runInvestorSplitOptimization').addSeparator().addItem('Execute Break-Even Analysis','runBreakevenAnalysis').addItem('Reset Break-Even Inputs','resetBreakevenInputs').addToUi();}
+function onOpen(){
+	var ui=SpreadsheetApp.getUi(),menu=ui.createMenu('⚙️ Setup');
+	try{
+		var sp=PropertiesService.getScriptProperties(),done=sp.getProperty('SETUP_COMPLETE');
+		if(done!=='true'){
+			menu.addItem('▶️ Run Initial Setup (Required Once)','runInitialSetup');
+			SpreadsheetApp.getActiveSpreadsheet().toast('Run Setup once via menu.','Setup',10);
+		} else {
+			menu.addItem('Setup Complete','setupAlreadyDone');
+		}
+	}catch(e){
+		menu.addItem('Error','setupAlreadyDone');
+	}
+	menu.addToUi();
+	ui.createMenu('📊 Slides').addItem('▶️ Generate Presentation','createPresentationFromSheet').addToUi();
+	ui.createMenu('⚙️ Calculations')
+		.addItem('Optimize Investor Split','runInvestorSplitOptimization')
+		.addSeparator()
+		.addItem('Execute Break-Even Analysis','runBreakevenAnalysis')
+		.addItem('Reset Break-Even Inputs','resetBreakevenInputs')
+		.addToUi();
+}
 function setupAlreadyDone(){SpreadsheetApp.getActiveSpreadsheet().toast('Setup already completed.','Info',5)}
 
 function runInvestorSplitOptimization(){
@@ -99,7 +120,63 @@ function updatePreliminarySheet(){var ss=SpreadsheetApp.getActiveSpreadsheet(),d
 function calculateInvestorSplitForTargetIRR(sheet,target,splitCell,irrCell,profitCell){var MAX=100,TOL=0.001,step=0.01,profit=sheet.getRange(profitCell).getValue();if(!(profit>0))return null;var split=sheet.getRange(splitCell).getValue();if(!(split>0&&split<1))split=.5;for(var i=0;i<MAX;i++){sheet.getRange(splitCell).setValue(split);SpreadsheetApp.flush();Utilities.sleep(400);var irr=sheet.getRange(irrCell).getValue();if(typeof irr!=='number'||isNaN(irr)){split+=step*0.1;split=Math.min(.99,Math.max(.01,split));continue}var diff=irr-target;if(Math.abs(diff)<=TOL)return split;if(diff>0)split-=step;else split+=step;split=Math.min(.99,Math.max(.01,split));if(Math.abs(diff)<.05)step=.005 else step=.01}return split}
 
 // Presentation generation (kept concise)
-function createPresentationFromSheet(){var ui=SpreadsheetApp.getUi();if(!SLIDES_TEMPLATE_ID){ui.alert('Slides template ID missing');return}try{var ss=SpreadsheetApp.getActiveSpreadsheet(),da=ss.getSheetByName('Detailed Analysis'),chartSheet=ss.getSheetByName(CHART_SHEET_NAME);if(!da||!chartSheet)throw new Error('Required sheets missing');var addr=da.getRange('B6').getValue();if(!addr)throw new Error('Simple address missing B6');var irr=da.getRange('B153').getDisplayValue(),roi=da.getRange('B151').getDisplayValue(),multiple=da.getRange('B152').getDisplayValue(),net=da.getRange('B138').getDisplayValue(),gross=da.getRange('B135').getDisplayValue();var file=DriveApp.getFileById(ss.getId()),parent=file.getParents().next(),copy=DriveApp.getFileById(SLIDES_TEMPLATE_ID).makeCopy(addr+' - Investor Summary',parent),pres=SlidesApp.openById(copy.getId()),slides=pres.getSlides();if(slides.length<4)throw new Error('Template missing slide 4');var slide=slides[3];slide.replaceAllText('{{TARGET_IRR}}',irr||'N/A');slide.replaceAllText('{{TARGET_ROI}}',roi||'N/A');slide.replaceAllText('{{TARGET_MULTIPLE}}',multiple||'N/A');slide.replaceAllText('{{NET_PROFIT}}',net||'N/A');slide.replaceAllText('{{GROSS_PROFIT}}',gross||'N/A');var charts=chartSheet.getCharts(),c1=null,c2=null;charts.forEach(c=>{var t=c.getOptions().get('title');if(t===PIE_CHART_1_TITLE)c1=c;else if(t===PIE_CHART_2_TITLE)c2=c});var w=pres.getPageWidth()*0.45,h=w*.75,gap=-25,slideW=pres.getPageWidth(),slideH=pres.getPageHeight(),total=2*w+gap,left=(slideW-total)/2,top=slideH-h-10;if(c1)slide.insertSheetsChartAsImage(c1,left,top,w,h);if(c2)slide.insertSheetsChartAsImage(c2,left+w+gap,top,w,h);pres.saveAndClose();var exec=ss.getSheetByName('Executive Summary');if(exec)exec.getRange('A124').insertHyperlink(copy.getUrl(),copy.getName());ui.alert('Presentation generated.') }catch(e){ui.alert('Error: '+e.message)}}
+function createPresentationFromSheet(){
+	var ui=SpreadsheetApp.getUi();
+	if(!SLIDES_TEMPLATE_ID){
+		ui.alert('Slides template ID missing');
+		return;
+	}
+	try{
+		var ss=SpreadsheetApp.getActiveSpreadsheet(),
+			da=ss.getSheetByName('Detailed Analysis'),
+			chartSheet=ss.getSheetByName(CHART_SHEET_NAME);
+		if(!da||!chartSheet) throw new Error('Required sheets missing');
+		var addr=da.getRange('B6').getValue();
+		if(!addr) throw new Error('Simple address missing B6');
+		var irr=da.getRange('B153').getDisplayValue(),
+			roi=da.getRange('B151').getDisplayValue(),
+			multiple=da.getRange('B152').getDisplayValue(),
+			net=da.getRange('B138').getDisplayValue(),
+			gross=da.getRange('B135').getDisplayValue();
+		var file=DriveApp.getFileById(ss.getId()),
+			parent=file.getParents().next(),
+			copy=DriveApp.getFileById(SLIDES_TEMPLATE_ID).makeCopy(addr+' - Investor Summary',parent),
+			pres=SlidesApp.openById(copy.getId()),
+			slides=pres.getSlides();
+		if(slides.length<4) throw new Error('Template missing slide 4');
+		var slide=slides[3];
+		slide.replaceAllText('{{TARGET_IRR}}',irr||'N/A');
+		slide.replaceAllText('{{TARGET_ROI}}',roi||'N/A');
+		slide.replaceAllText('{{TARGET_MULTIPLE}}',multiple||'N/A');
+		slide.replaceAllText('{{NET_PROFIT}}',net||'N/A');
+		slide.replaceAllText('{{GROSS_PROFIT}}',gross||'N/A');
+		var charts=chartSheet.getCharts(),c1=null,c2=null;
+		charts.forEach(function(c){
+			var t=c.getOptions().get('title');
+			if(t===PIE_CHART_1_TITLE){
+				c1=c;
+			} else if(t===PIE_CHART_2_TITLE){
+				c2=c;
+			}
+		});
+		var w=pres.getPageWidth()*0.45,
+			h=w*0.75,
+			gap=-25,
+			slideW=pres.getPageWidth(),
+			slideH=pres.getPageHeight(),
+			total=2*w+gap,
+			left=(slideW-total)/2,
+			top=slideH-h-10;
+		if(c1){ slide.insertSheetsChartAsImage(c1,left,top,w,h); }
+		if(c2){ slide.insertSheetsChartAsImage(c2,left+w+gap,top,w,h); }
+		pres.saveAndClose();
+		var exec=ss.getSheetByName('Executive Summary');
+		if(exec){ exec.getRange('A124').insertHyperlink(copy.getUrl(),copy.getName()); }
+		ui.alert('Presentation generated.');
+	}catch(e){
+		ui.alert('Error: '+e.message);
+	}
+}
 
 // Map image helpers rely on functions above
 
