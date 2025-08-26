@@ -30,6 +30,7 @@ Production deployment copies live in `apps-script/production/` and are the ONLY 
 - `DeleteDuplicates.gs` - De-duplicate by address.
  - (Template Sheet) `geoComp.ts` (kept outside production folder currently) - Local per-deal analysis engine (filters, comps import, map, chart sizing, preliminary push, investor split optimization, slide generator, break-even menu hooks). A trimmed deployable version can be produced later if desired.
  - `BreakEvenAnalysis.ts` - Break-even solver (integrated via menu in geoComp). If you prefer, you can merge this file into geoComp or copy only the portions you use.
+ - `GeoCompEngine.gs` - Compressed production deployment of the local per-deal analysis engine (menus, filters, comps, outputs, investor optimization, presentation). Use alongside `BreakEvenAnalysis.gs`.
 
 ### Script Property Keys Expected by geoComp / Break-Even
 Set these in the bound project BEFORE running the initial setup:
