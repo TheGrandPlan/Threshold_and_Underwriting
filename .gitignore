@@ -1,0 +1,19 @@
+# Node / general
+node_modules/
+.DS_Store
+Thumbs.db
+
+# GAS clasp (if later adopted)
+.clasp.json
+.classpath
+
+# Local environment / secrets
+.env
+.env.*
+*.local
+
+# Archives & originals (not for deployment)
+originals/
+
+# Temporary
+*.log
