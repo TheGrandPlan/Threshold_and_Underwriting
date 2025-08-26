@@ -81,7 +81,31 @@ function deleteOwnSetupTrigger(){try{ScriptApp.getProjectTriggers().forEach(func
 
 function handleSheetEdit(e){var sp=PropertiesService.getScriptProperties();if(sp.getProperty('SETUP_COMPLETE')!=='true')return;var r=e.range,a1=r.getA1Notation(),sheet=r.getSheet();if(sheet.getName()!==context.config.MASTER_SHEET_NAME)return;if(a1===context.config.COMP_RADIUS_CELL)main(context);else if([context.config.DATE_FILTER_CELL,context.config.AGE_FILTER_CELL,context.config.SIZE_FILTER_CELL,context.config.SD_MULTIPLIER_CELL].indexOf(a1)>-1)refilterAndAnalyze(context)}
 
-function main(ctx){return withGlobalLock('main',function(){initializeContext();if(!context.sheet)return;var sheet=context.sheet,conf=context.config,address=sheet.getRange(conf.ADDRESS_CELL).getValue();if(!address)return;var radius=sheet.getRange(conf.COMP_RADIUS_CELL).getValue();if(isNaN(radius)||radius<=0)return;var coords=getCoordinatesFromAddress(address);if(!coords)return;var comps=searchComps(coords,radius);importCompData(comps,context);if(comps.length){applyAllFilters(context);clearChartDataForHiddenRows(context);updateAnalysisOutputs(context)}else{var es=context.spreadsheet.getSheetByName('Executive Summary');if(es){es.getRange('G21:K34').clearContent();es.getRange('B23:F32').clearContent();}}})}
+function main(ctx){
+	return withGlobalLock('main',function(){
+		initializeContext();
+		if(!context.sheet) return;
+		var sheet=context.sheet,conf=context.config,address=sheet.getRange(conf.ADDRESS_CELL).getValue();
+		if(!address) return;
+		var radius=sheet.getRange(conf.COMP_RADIUS_CELL).getValue();
+		if(isNaN(radius)||radius<=0) return;
+		var coords=getCoordinatesFromAddress(address);
+		if(!coords) return;
+		var comps=searchComps(coords,radius);
+		importCompData(comps,context);
+		if(comps.length){
+			applyAllFilters(context);
+			clearChartDataForHiddenRows(context);
+			updateAnalysisOutputs(context);
+		} else {
+			var es=context.spreadsheet.getSheetByName('Executive Summary');
+			if(es){
+				es.getRange('G21:K34').clearContent();
+				es.getRange('B23:F32').clearContent();
+			}
+		}
+	});
+}
 
 function refilterAndAnalyze(){return withGlobalLock('refilter',function(){initializeContext();if(!context.sheet)return;applyAllFilters(context);SpreadsheetApp.flush();var conf=context.config,sheet=context.sheet,start=conf.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),vis=[];for(var r=start;r<=last;r++)if(!sheet.isRowHiddenByUser(r))vis.push(r);applyFormulasToRows(sheet,vis,32);clearChartDataForHiddenRows(context);updateAnalysisOutputs(context)})}
 
@@ -100,10 +124,65 @@ function calculateDistance(a,b,c,d){var toR=x=>x*Math.PI/180,R=3958.8,dLat=toR(c
 
 function importCompData(props,ctx){var sheet=ctx.sheet,conf=ctx.config,start=conf.COMP_RESULTS_START_ROW;if(sheet.getLastRow()>=start)sheet.getRange(start,1,Math.max(1,sheet.getLastRow()-start+1),23).clearContent();if(!props.length)return;var rows=props.map(p=>[p.address,p.city,p.state,p.zip,p.beds,p.baths,p.buildingSqft,p.lotSize,p.yearBuilt,p.date,p.price,'',p.distance!=null?Number(p.distance).toFixed(2):'', '',p.lat,p.lng]);var rng=sheet.getRange(start,1,rows.length,16);rng.setValues(rows);try{var templateRow=32,cols=[14,18,19,20,21,22,23];cols.forEach(function(c){var f=sheet.getRange(templateRow,c).getFormulaR1C1();if(f)sheet.getRange(start,c,rows.length,1).setFormulaR1C1(f)})}catch(e){}try{sheet.getRange(start,7,rows.length,2).setNumberFormat('#,##0');sheet.getRange(start,11,rows.length,1).setNumberFormat('$#,##0');sheet.getRange(start,13,rows.length,1).setNumberFormat('0.00');sheet.getRange(start,15,rows.length,2).setNumberFormat('0.000000')}catch(e){}}
 
-function updateAnalysisOutputs(ctx){try{calculateTrendlineAndPricePerSqft(ctx);updateChartWithMargins(ctx);populateExecutiveSummaryCompsTable(ctx);var sp=PropertiesService.getScriptProperties(),mapKey=sp.getProperty('staticMapsApiKey');if(mapKey){var subj=ctx.sheet.getRange(ctx.config.ADDRESS_CELL).getValue(),coords=getCoordinatesFromAddress(subj);if(coords){var visible=[],start=ctx.config.COMP_RESULTS_START_ROW,last=ctx.sheet.getLastRow();for(var r=start;r<=last;r++)if(!ctx.sheet.isRowHiddenByUser(r)){var lat=ctx.sheet.getRange('O'+r).getValue(),lng=ctx.sheet.getRange('P'+r).getValue();if(lat&&lng)visible.push({lat:lat,lng:lng})}var mapUrl=generateStaticMapUrl(coords,visible,mapKey);var exec=ctx.spreadsheet.getSheetByName('Executive Summary');if(exec&&mapUrl)insertMapIntoSheet(exec,mapUrl,'G21')}}updatePreliminarySheet()}catch(e){Logger.log('update outputs error '+e.message)}}
+function updateAnalysisOutputs(ctx){
+	try{
+		calculateTrendlineAndPricePerSqft(ctx);
+		updateChartWithMargins(ctx);
+		populateExecutiveSummaryCompsTable(ctx);
+		var sp=PropertiesService.getScriptProperties(),mapKey=sp.getProperty('staticMapsApiKey');
+		if(mapKey){
+			var subj=ctx.sheet.getRange(ctx.config.ADDRESS_CELL).getValue(),coords=getCoordinatesFromAddress(subj);
+			if(coords){
+				var visible=[],start=ctx.config.COMP_RESULTS_START_ROW,last=ctx.sheet.getLastRow();
+				for(var r=start;r<=last;r++) if(!ctx.sheet.isRowHiddenByUser(r)){
+					var lat=ctx.sheet.getRange('O'+r).getValue(),lng=ctx.sheet.getRange('P'+r).getValue();
+					if(lat&&lng) visible.push({lat:lat,lng:lng});
+				}
+				var mapUrl=generateStaticMapUrl(coords,visible,mapKey);
+				var exec=ctx.spreadsheet.getSheetByName('Executive Summary');
+				if(exec&&mapUrl) insertMapIntoSheet(exec,mapUrl,'G21');
+			}
+		}
+		updatePreliminarySheet();
+	}catch(e){
+		Logger.log('update outputs error '+e.message);
+	}
+}
 
 function calculateTrendlineAndPricePerSqft(ctx){var sheet=ctx.sheet,start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),data=sheet.getRange('G'+start+':N'+last).getValues(),sizes=[],pps=[];for(var i=0;i<data.length;i++){var row=start+i;if(sheet.isRowHiddenByUser(row))continue;var s=data[i][0],p=data[i][7];if(s>0&&p>0){sizes.push(s);pps.push(p)}}if(!sizes.length)return;var N=sizes.length,sumX=sizes.reduce((a,b)=>a+b,0),sumY=pps.reduce((a,b)=>a+b,0),sumXY=sizes.reduce((s,x,i)=>s+x*pps[i],0),sumX2=sizes.reduce((s,x)=>s+x*x,0),slope=(N*sumXY-sumX*sumY)/(N*sumX2-sumX*sumX),inter=(sumY-slope*sumX)/N,subject=sheet.getRange('G3:G5').getValues(),out=[];subject.forEach(function(r){var hs=r[0];out.push([hs>0?((slope*hs)+inter).toFixed(2):''])});sheet.getRange('N3:N5').setValues(out)}
-function updateChartWithMargins(ctx){var sheet=ctx.sheet,charts=sheet.getCharts(),hp=null,pps=null;charts.forEach(c=>{var t=c.getOptions().get('title');if(t==='Home Price ($) x Home Size (sq.ft.)')hp=c;else if(t==='Home Prices per Square Foot ($) x Home Size (sq.ft.)')pps=c});if(!hp||!pps)return;var start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),sizes=[],ppsArr=[],prices=[];for(var r=start;r<=last;r++)if(!sheet.isRowHiddenByUser(r)){var hs=sheet.getRange('G'+r).getValue(),pp=sheet.getRange('N'+r).getValue(),pr=sheet.getRange('K'+r).getValue();if(hs>0&&pp>0&&pr>0){sizes.push(hs);ppsArr.push(pp);prices.push(pr)}}if(!sizes.length)return;var minS=Math.min.apply(null,sizes),maxS=Math.max.apply(null,sizes),minPPS=Math.min.apply(null,ppsArr),maxPPS=Math.max.apply(null,ppsArr),minPr=Math.min.apply(null,prices),maxPr=Math.max.apply(null,prices),mS=300,mP=300,mPr=300000;sheet.updateChart(hp.modify().setOption('hAxis.minValue',Math.max(0,minS-mS)).setOption('hAxis.maxValue',maxS+mS).setOption('vAxis.minValue',Math.max(0,minPr-mPr)).setOption('vAxis.maxValue',maxPr+mPr).build());sheet.updateChart(pps.modify().setOption('hAxis.minValue',Math.max(0,minS-mS)).setOption('hAxis.maxValue',maxS+mS).setOption('vAxis.minValue',Math.max(0,minPPS-mP)).setOption('vAxis.maxValue',maxPPS+mP).build())}
+function updateChartWithMargins(ctx){
+	var sheet=ctx.sheet,charts=sheet.getCharts(),hp=null,pps=null;
+	charts.forEach(function(c){
+		var t=c.getOptions().get('title');
+		if(t==='Home Price ($) x Home Size (sq.ft.)'){
+			hp=c;
+		} else if(t==='Home Prices per Square Foot ($) x Home Size (sq.ft.)'){
+			pps=c;
+		}
+	});
+	if(!hp||!pps) return;
+	var start=ctx.config.COMP_RESULTS_START_ROW,last=sheet.getLastRow(),sizes=[],ppsArr=[],prices=[];
+	for(var r=start;r<=last;r++) if(!sheet.isRowHiddenByUser(r)){
+		var hs=sheet.getRange('G'+r).getValue(),pp=sheet.getRange('N'+r).getValue(),pr=sheet.getRange('K'+r).getValue();
+		if(hs>0&&pp>0&&pr>0){
+			sizes.push(hs);ppsArr.push(pp);prices.push(pr);
+		}
+	}
+	if(!sizes.length) return;
+	var minS=Math.min.apply(null,sizes),maxS=Math.max.apply(null,sizes),minPPS=Math.min.apply(null,ppsArr),maxPPS=Math.max.apply(null,ppsArr),minPr=Math.min.apply(null,prices),maxPr=Math.max.apply(null,prices),mS=300,mP=300,mPr=300000;
+	sheet.updateChart(hp.modify()
+		.setOption('hAxis.minValue',Math.max(0,minS-mS))
+		.setOption('hAxis.maxValue',maxS+mS)
+		.setOption('vAxis.minValue',Math.max(0,minPr-mPr))
+		.setOption('vAxis.maxValue',maxPr+mPr)
+		.build());
+	sheet.updateChart(pps.modify()
+		.setOption('hAxis.minValue',Math.max(0,minS-mS))
+		.setOption('hAxis.maxValue',maxS+mS)
+		.setOption('vAxis.minValue',Math.max(0,minPPS-mP))
+		.setOption('vAxis.maxValue',maxPPS+mP)
+		.build());
+}
 
 function populateExecutiveSummaryCompsTable(ctx){var sales=ctx.sheet,exec=ctx.spreadsheet.getSheetByName('Executive Summary');if(!exec)return;var start=ctx.config.COMP_RESULTS_START_ROW,last=sales.getLastRow(),data=[],maxCol=14;if(last>=start){var all=sales.getRange(start,1,last-start+1,maxCol).getValues();for(var i=0;i<all.length;i++){var row=start+i;if(!sales.isRowHiddenByUser(row)){data.push({address:all[i][0],homeSize:all[i][6],salePrice:all[i][10],distance:all[i][12],pricePerSqft:all[i][13]})}}}data.sort((a,b)=>(parseFloat(a.distance)||Infinity)-(parseFloat(b.distance)||Infinity));var top=data.slice(0,10),table=top.map(c=>[c.address||'N/A',c.homeSize||null,c.salePrice||null,c.distance!=null?Number(c.distance).toFixed(2):null,c.pricePerSqft||null]);var rng=exec.getRange('B23:F32');rng.clearContent();if(table.length)exec.getRange(23,2,table.length,5).setValues(table)}
 
