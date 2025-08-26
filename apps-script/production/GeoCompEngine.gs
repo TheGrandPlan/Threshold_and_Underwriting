@@ -30,7 +30,24 @@ function initializeContext(){try{if(!context.spreadsheet)context.spreadsheet=Spr
 function onOpen(){var ui=SpreadsheetApp.getUi(),menu=ui.createMenu('⚙️ Setup');try{var sp=PropertiesService.getScriptProperties(),done=sp.getProperty('SETUP_COMPLETE');if(done!=='true'){menu.addItem('▶️ Run Initial Setup (Required Once)','runInitialSetup');SpreadsheetApp.getActiveSpreadsheet().toast('Run Setup once via menu.','Setup',10);}else menu.addItem('Setup Complete','setupAlreadyDone');}catch(e){menu.addItem('Error','setupAlreadyDone')}menu.addToUi();ui.createMenu('📊 Slides').addItem('▶️ Generate Presentation','createPresentationFromSheet').addToUi();ui.createMenu('⚙️ Calculations').addItem('Optimize Investor Split','runInvestorSplitOptimization').addSeparator().addItem('Execute Break-Even Analysis','runBreakevenAnalysis').addItem('Reset Break-Even Inputs','resetBreakevenInputs').addToUi();}
 function setupAlreadyDone(){SpreadsheetApp.getActiveSpreadsheet().toast('Setup already completed.','Info',5)}
 
-function runInvestorSplitOptimization(){return withGlobalLock('investorSplitOpt',function(){var fn='runInvestorSplitOptimization',ui=SpreadsheetApp.getUi(),ss=SpreadsheetApp.getActiveSpreadsheet(),sheet=ss.getSheetByName('Detailed Analysis');if(!sheet){ui.alert('Detailed Analysis missing');return}try{var targetIRRCell=sheet.getRange(TARGET_IRR_INPUT_CELL),val=targetIRRCell.getValue();if(typeof val!=='number'||isNaN(val)||val<=0||val>5)throw new Error('Invalid Target IRR in '+TARGET_IRR_INPUT_CELL);var finalSplit=calculateInvestorSplitForTargetIRR(sheet,val,INVESTOR_SPLIT_CELL,INVESTOR_IRR_CELL,PROJECT_NET_PROFIT_CELL);if(finalSplit!==null){ui.alert('Optimization complete. Final Split: '+(finalSplit*100).toFixed(2)+'% Achieved IRR: '+sheet.getRange(INVESTOR_IRR_CELL).getDisplayValue());}else ui.alert('Optimization failed.');}catch(e){ui.alert('Error: '+e.message)}})}
+function runInvestorSplitOptimization(){
+	return withGlobalLock('investorSplitOpt',function(){
+		var fn='runInvestorSplitOptimization',ui=SpreadsheetApp.getUi(),ss=SpreadsheetApp.getActiveSpreadsheet(),sheet=ss.getSheetByName('Detailed Analysis');
+		if(!sheet){ui.alert('Detailed Analysis missing');return}
+		try{
+			var targetIRRCell=sheet.getRange(TARGET_IRR_INPUT_CELL),val=targetIRRCell.getValue();
+			if(typeof val!=='number'||isNaN(val)||val<=0||val>5)throw new Error('Invalid Target IRR in '+TARGET_IRR_INPUT_CELL);
+			var finalSplit=calculateInvestorSplitForTargetIRR(sheet,val,INVESTOR_SPLIT_CELL,INVESTOR_IRR_CELL,PROJECT_NET_PROFIT_CELL);
+			if(finalSplit!==null){
+				ui.alert('Optimization complete. Final Split: '+(finalSplit*100).toFixed(2)+'% Achieved IRR: '+sheet.getRange(INVESTOR_IRR_CELL).getDisplayValue());
+			} else {
+				ui.alert('Optimization failed.');
+			}
+		}catch(e){
+			ui.alert('Error: '+e.message)
+		}
+	})
+}
 
 function runInitialSetup(){var sp=PropertiesService.getScriptProperties(),status=sp.getProperty('SETUP_COMPLETE');if(status==='true')return; if(!doesSetupTriggerExist()){createSetupTrigger();SpreadsheetApp.getUi().alert('Setup trigger created. Will auto-run shortly.');return}Logger.log('Running setup');try{var ssId=SpreadsheetApp.getActiveSpreadsheet().getId(),file=DriveApp.getFileById(ssId),desc=file.getDescription();if(!desc)throw new Error('Spreadsheet description JSON missing');var meta=JSON.parse(desc),requestUrl=meta.requestUrl,secret=meta.uniqueSecret;if(!requestUrl||!secret)throw new Error('Missing requestUrl or uniqueSecret');var cred=null;function tryFetch(action,payload){var r=UrlFetchApp.fetch(requestUrl,{method:'post',contentType:'application/json',payload:JSON.stringify(payload),muteHttpExceptions:true});if(r.getResponseCode()===200){var body=JSON.parse(r.getContentText());if(!body.error)return body;throw new Error(body.error||'Unknown credential error')}throw new Error('HTTP '+r.getResponseCode())}
 try{cred=tryFetch('getCredentials',{action:'getCredentials',spreadsheetId:ssId,callbackSecret:secret})}catch(e){cred=tryFetch('refreshCredentials',{action:'refreshCredentials',spreadsheetId:ssId,originalSecret:secret})}
